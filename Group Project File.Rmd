@@ -1,0 +1,279 @@
+---
+title: "gp"
+author: "Ty Wicks"
+date: "4/29/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Project #2 USGS DOC Data
+
+
+######################
+#Install Libraries
+######################
+
+
+```{r}
+library(fields)
+library(lattice)
+library(glmnet)
+```
+
+
+######################
+#Load data
+######################
+
+
+```{r}
+load("DOC_baseFlow_weightedAvg_and_predictors.RData")
+
+#This is a really long name for a dataset, so this command just renames it.
+data <- DOC_baseFlow_weightedAvg_and_predictors
+dim(data)
+colnames(data)
+lm(meanDOC ~., data = data)
+
+y_response <- data[,"meanDOC"]
+
+year.obs <- table(data$Year)
+plot(1984:2012, year.obs, type="b", pch=19, xlab="Year", ylab="Number of Observations")
+barchart(year.obs, horizontal=FALSE, col="gray", xlab="Year", ylab="Number of Observations")
+```
+
+
+######################
+#Plot the locations
+######################
+
+
+```{r}
+plot(data$Longitude, data$Latitude, pch=19, col=rgb(0,0,0,.1), xlim=c(-109,-102), ylim=c(37,42))
+US(add=T)
+text(-108, 37.5, "Colorado", cex=2)
+```
+
+
+######################
+#Creating Matrix of Predictors
+######################
+
+
+```{r}
+#Aspect Ratio: indicates the predominant aspect, which is a categorical value with nine different classes: North, Northeast, East, Southeast, South, Southwest,West, Northwest, and Flat
+
+xFactors <- model.matrix(y_response ~ as.factor(data[,"aspect_predominant"]))[, -1]
+
+colNames_xFactors <- c("aspect_predominant_1")
+for (index in 2:8)
+{
+  colNames_xFactors <- c(colNames_xFactors,paste("aspect_predominant_",as.character(index),sep=""))
+}
+
+colnames(xFactors) <- colNames_xFactors
+
+#Collecting the aspect ratio variables with all of the others needed
+#Using one fire predictor  (column numbers for fire predictors are 6, 7, and 8)
+X_predictors_unStandardized <- as.matrix( cbind( DOC_baseFlow_weightedAvg_and_predictors[,c(2,6,9:30,32)], xFactors) )
+
+head(X_predictors_unStandardized)
+dim(X_predictors_unStandardized)
+class(X_predictors_unStandardized)
+dataFrame_X_predictors <- as.data.frame(X_predictors_unStandardized)
+```
+
+
+######################
+#Standardizing the Predictors 
+#(Generally a good idea before fitting a linear model)
+######################
+
+
+```{r}
+X_predictors_means <- colMeans(X_predictors_unStandardized)
+X_predictors_sd <- apply(X_predictors_unStandardized, MARGIN=2, 'sd')
+
+time_index <- 			1
+fire_indices <- 		2
+MPB_indecies <- 		3:5
+landCover_indices <- 	6:8
+temp_indices <- 		9:14
+precipSnow_indices <- 	15:20
+soil_indices <- 		21:23
+elevation_index <- 		24
+wasteWater_index <- 	25
+aspec_indices <- 		26:33
+X_indices_subtractMean <- c(time_index, temp_indices, precipSnow_indices, soil_indices, elevation_index, wasteWater_index)
+X_indices_scaleBySD <- c(fire_indices)
+
+X_predictors_standardized <- X_predictors_unStandardized
+X_predictors_standardized[,X_indices_subtractMean] <- sweep(X_predictors_unStandardized[,X_indices_subtractMean],MARGIN=2,X_predictors_means[X_indices_subtractMean],'-')
+  
+colnames(X_predictors_standardized)
+dataFrame_X_standardized <- as.data.frame(X_predictors_standardized)
+View(dataFrame_X_standardized)
+```
+
+
+######################
+#Create new variables
+#Plot all data points with DOC
+######################
+
+
+```{r}
+doc_data <- cbind(y_response, dataFrame_X_standardized)
+
+doc_fit <- lm(y_response ~ ., data = doc_data)
+summary(doc_fit)
+
+col_names <- colnames(doc_data)
+
+for(var in 2:ncol(doc_data)){
+  plot(doc_data[ , var], doc_data$y_response, ylab = "DOC", xlab = col_names[var])
+  title(paste0(col_names[var], " by DOC"))
+  
+  abline(lm(y_response ~ doc_data[ , var], data = doc_data), col = "red")
+}
+```
+
+
+######################
+#Find best variables using
+#Forward & Backward step and LASSO
+######################
+
+
+```{r}
+stepBck <- step(doc_fit, direction="backward", k = log(nrow(doc_data)), trace = 0)
+
+fwdFit <- lm(y_response ~ 1, data = doc_data)
+stepFwd <- step(fwdFit, direction="forward", k = log(nrow(doc_data)), scope = formula(doc_fit), trace = 0)
+
+remove <- (-which(colnames(doc_data) == 'y_response'))
+lassMat <- as.matrix(doc_data[,remove])
+cvLass <- cv.glmnet(lassMat, doc_data$y_response)
+```
+
+
+######################
+#Review method summaries and
+#divide results into groups
+######################
+
+
+```{r}
+summary(stepBck)
+#fire_normRdNBR_5yDecay, landCover_developedFraction, precip_baseFlow, SWE_baseFlow, soil_Bfraction, elevation_mean,
+#wasteWaterPointSources_count, aspect_predominant_3
+
+summary(stepFwd)
+#elevation_mean, wasteWaterPointSources_count, aspect_predominant_3, landCover_developedFraction, soil_Bfraction,
+#fire_normRdNBR_5yDecay, aspect_predominant_7
+
+coef(cvLass)
+#maxTemp_yearAvg, elevation_mean, wasteWaterPointSources_count, aspect_predominant_3
+
+
+#Chosen 3 times:
+#elevation_mean, wasteWaterPointSources_count, aspect_predominant_3
+
+#Chosen 2 times:
+#landCover_developedFraction, soil_Bfraction, fire_normRdNBR_5yDecay
+
+#Chosen 1 time:
+#precip_baseFlow, SWE_baseFlow, aspect_predominant_7, maxTemp_yearAvg
+```
+
+
+######################
+#Create new data frame of
+#best variables for graphing
+######################
+
+
+```{r}
+chosenData <- doc_data[,c(25, 26, 29, 33, 7, 23, 3, 16, 15, 19)]  
+
+chosenVars <- colnames(chosenData)
+```
+
+
+######################
+#Graph each variable
+#side by side
+######################
+
+
+```{r}
+par(mfrow=c(1,5))
+plot(chosenData$elevation_mean, doc_data$y_response, xlab = "Elevation", ylab = "DOC", main = "3 Time Selection")
+plot(chosenData$wasteWaterPointSources_count, doc_data$y_response, xlab = "Waste Water Source", ylab = "DOC", main = "3 Time Selection")
+#plot(chosenData$aspect_predominant_3, doc_data$y_response, xlab = "Aspect 3", ylab = "DOC", main = "3 Time Selection")
+plot(chosenData$landCover_developedFraction, doc_data$y_response, xlab = "Land Development Fraction", ylab = "DOC", main = "2 Time Selection")
+plot(chosenData$soil_Bfraction, doc_data$y_response, xlab = "Soil BFraction", ylab = "DOC", main = "2 Time Selection")
+
+par(mfrow=c(1,5))
+plot(chosenData$fire_normRdNBR_5yDecay, doc_data$y_response, xlab = "Fire Norm Decay", ylab = "DOC", main = "2 Time Selection")
+plot(chosenData$precip_baseFlow, doc_data$y_response, xlab = "Precipitation Base Flow", ylab = "DOC", main = "1 Time Selection")
+plot(chosenData$SWE_baseFlow, doc_data$y_response, xlab = "SWE Base Flow", ylab = "DOC", main = "1 Time Selection")
+#plot(chosenData$aspect_predominant_7, doc_data$y_response, xlab = "Aspect 7", ylab = "DOC", main = "1 Time Selection")
+plot(chosenData$maxTemp_yearAvg, doc_data$y_response, xlab = "Yearly Max Temp", ylab = "DOC", main = "1 Time Selection")
+```
+
+
+######################
+#Graph variables chosen
+#by all three methods
+######################
+
+
+```{r}
+par(mfrow=c(1,2))
+plot(chosenData$elevation_mean, doc_data$y_response, xlab = "Elevation", ylab = "DOC", main = "3 Time Selection")
+abline(lm(doc_data$y_response ~ chosenData$elevation_mean), col = "red")
+plot(chosenData$wasteWaterPointSources_count, doc_data$y_response, xlab = "Waste Water Source", ylab = "DOC", main = "3 Time Selection")
+abline(lm(doc_data$y_response ~ chosenData$wasteWaterPointSources_count), col = "red")
+```
+
+
+######################
+#Graph variables chosen
+#by two methods
+######################
+
+
+```{r}
+par(mfrow=c(1,3))
+plot(chosenData$landCover_developedFraction, doc_data$y_response, xlab = "Land Development Fraction", ylab = "DOC", main = "2 Time Selection")
+abline(lm(doc_data$y_response ~ chosenData$landCover_developedFraction), col = "red")
+plot(chosenData$soil_Bfraction, doc_data$y_response, xlab = "Soil BFraction", ylab = "DOC", main = "2 Time Selection")
+abline(lm(doc_data$y_response ~ chosenData$soil_Bfraction), col = "red")
+plot(chosenData$fire_normRdNBR_5yDecay, doc_data$y_response, xlab = "Fire Norm Decay", ylab = "DOC", main = "2 Time Selection")
+abline(lm(doc_data$y_response ~ chosenData$fire_normRdNBR_5yDecay), col = "red")
+```
+
+
+######################
+#Graph variables chosen
+#by one method
+######################
+
+
+```{r}
+par(mfrow=c(1,3))
+plot(chosenData$precip_baseFlow, doc_data$y_response, xlab = "Precipitation Base Flow", ylab = "DOC", main = "1 Time Selection")
+abline(lm(doc_data$y_response ~ chosenData$precip_baseFlow), col = "red")
+plot(chosenData$SWE_baseFlow, doc_data$y_response, xlab = "SWE Base Flow", ylab = "DOC", main = "1 Time Selection")
+abline(lm(doc_data$y_response ~ chosenData$SWE_baseFlow), col = "red")
+plot(chosenData$maxTemp_yearAvg, doc_data$y_response, xlab = "Yearly Max Temp", ylab = "DOC", main = "1 Time Selection")
+abline(lm(doc_data$y_response ~ chosenData$maxTemp_yearAvg), col = "red")
+```
+
+
+
+
